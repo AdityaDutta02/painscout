@@ -4,18 +4,82 @@
 import { callGateway } from './terminal-ai';
 import type { ScoredPost } from './score';
 
+interface GatewayMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+interface GatewayOpts {
+  category: string;
+  tier: string;
+  system: string;
+}
+
 function extractJson<T>(s: string): T {
-  // model often wraps JSON in ```json ... ``` or adds prose
   const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = (fenced ? fenced[1] : s).trim();
-  // try direct
+
   try {
     return JSON.parse(raw) as T;
-  } catch {
-    // last resort: pull first {...} or [...]
-    const obj = raw.match(/[{\[][\s\S]*[}\]]/);
-    if (!obj) throw new Error('No JSON found in LLM output');
-    return JSON.parse(obj[0]) as T;
+  } catch {}
+
+  const start = raw.search(/[{[]/);
+  if (start === -1) throw new Error(`No JSON found. First 200: ${raw.slice(0, 200)}`);
+  const body = raw.slice(start);
+
+  // Brute-force: walk back from end, retry parse at each closing bracket.
+  for (let end = body.length; end > 1; end--) {
+    const ch = body[end - 1];
+    if (ch !== ']' && ch !== '}') continue;
+    try {
+      return JSON.parse(body.slice(0, end)) as T;
+    } catch {}
+  }
+
+  // Last resort: close any open brackets at end of body.
+  const repaired = repairBrackets(body);
+  try {
+    return JSON.parse(repaired) as T;
+  } catch (e) {
+    throw new Error(`JSON parse failed (${(e as Error).message}). First 200: ${raw.slice(0, 200)}`);
+  }
+}
+
+function repairBrackets(s: string): string {
+  let inStr = false;
+  let esc = false;
+  const stack: string[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' && stack[stack.length - 1] === '{') stack.pop();
+    else if (c === ']' && stack[stack.length - 1] === '[') stack.pop();
+  }
+  let out = s;
+  if (inStr) out += '"';
+  while (stack.length) {
+    const top = stack.pop();
+    out += top === '{' ? '}' : ']';
+  }
+  return out;
+}
+
+async function callJson<T>(messages: GatewayMessage[], embedToken: string, opts: GatewayOpts): Promise<T> {
+  const res = await callGateway(messages, embedToken, opts);
+  try {
+    return extractJson<T>(res.content);
+  } catch (firstErr) {
+    console.warn('[llm] first JSON parse failed, retrying with stricter prompt', (firstErr as Error).message);
+    const stricter: GatewayOpts = {
+      ...opts,
+      system: `${opts.system}\n\nCRITICAL: Your previous response was malformed JSON. Return ONLY a complete, valid JSON value. No markdown fences. No prose. No trailing commentary. Escape all quotes inside strings.`,
+    };
+    const retry = await callGateway(messages, embedToken, stricter);
+    return extractJson<T>(retry.content);
   }
 }
 
@@ -55,12 +119,11 @@ Return ONLY valid JSON matching:
 
 No prose. No code fences.`;
 
-  const res = await callGateway(
+  return callJson<AIQuestion[]>(
     [{ role: 'user', content: `Niche: ${niche}` }],
     embedToken,
     { category: 'chat', tier: 'fast', system }
   );
-  return extractJson<AIQuestion[]>(res.content);
 }
 
 export async function suggestSubs(niche: string, answers: Record<string, string>, embedToken: string): Promise<string[]> {
@@ -74,12 +137,11 @@ Rules:
 Return ONLY valid JSON: ["sub1", "sub2", ...]
 No prose. No code fences.`;
   const userMsg = `Niche: ${niche}\nAudience + platform context: ${JSON.stringify(answers)}`;
-  const res = await callGateway([{ role: 'user', content: userMsg }], embedToken, {
+  return callJson<string[]>([{ role: 'user', content: userMsg }], embedToken, {
     category: 'chat',
     tier: 'fast',
     system,
   });
-  return extractJson<string[]>(res.content);
 }
 
 export interface RankedProblem {
@@ -134,10 +196,9 @@ Audience + platform context: ${JSON.stringify(answers)}
 Posts (JSON):
 ${JSON.stringify(trimmed)}`;
 
-  const res = await callGateway([{ role: 'user', content: userMsg }], embedToken, {
+  return callJson<RankedProblem[]>([{ role: 'user', content: userMsg }], embedToken, {
     category: 'chat',
     tier: 'good',
     system,
   });
-  return extractJson<RankedProblem[]>(res.content);
 }
