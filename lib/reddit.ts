@@ -1,20 +1,15 @@
-// Fetch top posts from a subreddit via Reddit's public JSON endpoint.
-// No auth. Polite UA + throttle. Personal-use disclaimer in app footer.
+// SERVER-SIDE Reddit fetch — kept as a fallback. Reddit blocks the
+// Coolify datacenter IP, so the primary path is client-side fetch via
+// lib/reddit-client.ts. This file is only used if the client did not
+// supply pre-scraped posts in the analyze payload.
 
-export interface RedditPost {
-  sub: string;
-  title: string;
-  selftext: string;
-  score: number;
-  comments: number;
-  url: string;
-  flair: string;
-  created: number;
-}
+import type { RedditPost, TimeWindow } from './types';
+
+export type { RedditPost };
 
 const UA = 'web:painscout:0.1 (research)';
 
-export async function fetchSub(sub: string, timeWindow: 'day' | 'week' | 'month' | 'year' | 'all' = 'month', limit = 100): Promise<RedditPost[]> {
+export async function fetchSub(sub: string, timeWindow: TimeWindow = 'month', limit = 100): Promise<RedditPost[]> {
   const url = `https://www.reddit.com/r/${encodeURIComponent(sub)}/top.json?t=${timeWindow}&limit=${limit}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': UA },
@@ -42,7 +37,7 @@ export async function fetchSub(sub: string, timeWindow: 'day' | 'week' | 'month'
   });
 }
 
-export async function fetchManySubs(subs: string[], timeWindow: 'day' | 'week' | 'month' | 'year' | 'all' = 'month', limit = 100): Promise<RedditPost[]> {
+export async function fetchManySubs(subs: string[], timeWindow: TimeWindow = 'month', limit = 100): Promise<RedditPost[]> {
   const out: RedditPost[] = [];
   for (const sub of subs) {
     try {

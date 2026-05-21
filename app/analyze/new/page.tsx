@@ -2,6 +2,9 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useEmbedToken } from '@/hooks/use-embed-token';
+import { fetchManySubsBrowser } from '@/lib/reddit-client';
+import { timeWindowFromAnswers } from '@/lib/types';
+import type { SubFetchResult } from '@/lib/reddit-client';
 
 interface AIQuestion {
   question: string;
@@ -9,7 +12,20 @@ interface AIQuestion {
   options: { label: string; description: string }[];
 }
 
-type Stage = 'loading-questions' | 'answering' | 'loading-subs' | 'approving-subs' | 'analyzing' | 'error';
+type Stage =
+  | 'loading-questions'
+  | 'answering'
+  | 'loading-subs'
+  | 'approving-subs'
+  | 'scraping'
+  | 'analyzing'
+  | 'error';
+
+interface ScrapeProgress {
+  current: number;
+  total: number;
+  sub: string;
+}
 
 export default function NewAnalysis() {
   const router = useRouter();
@@ -21,6 +37,8 @@ export default function NewAnalysis() {
   const [subs, setSubs] = useState<string[]>([]);
   const [subInput, setSubInput] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [scrapeProgress, setScrapeProgress] = useState<ScrapeProgress | null>(null);
+  const [scrapeErrors, setScrapeErrors] = useState<SubFetchResult[]>([]);
 
   // Pick up niche from session
   useEffect(() => {
@@ -90,12 +108,47 @@ export default function NewAnalysis() {
 
   async function runAnalysis() {
     if (!embedToken) return;
+    setStage('scraping');
+    setScrapeProgress({ current: 0, total: subs.length, sub: '' });
+    setScrapeErrors([]);
+
+    const timeWindow = timeWindowFromAnswers(answers);
+
+    let scraped;
+    try {
+      scraped = await fetchManySubsBrowser(subs.slice(0, 7), timeWindow, 100, (current, total, sub) =>
+        setScrapeProgress({ current, total, sub })
+      );
+    } catch (e) {
+      setErrorMsg(`Reddit scrape failed: ${(e as Error).message}`);
+      setStage('error');
+      return;
+    }
+    setScrapeErrors(scraped.errors);
+
+    if (scraped.posts.length === 0) {
+      const errLines = scraped.errors.map((er) => `r/${er.sub}: ${er.error ?? 'no posts'}`).join('\n');
+      setErrorMsg(
+        `Reddit returned no posts.\n${errLines || 'All subs returned empty.'}\nReddit may be rate-limiting your IP — wait a few minutes and try again.`
+      );
+      setStage('error');
+      return;
+    }
+
     setStage('analyzing');
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche, answers, subs, embedToken, viewerId: 'viewer' }),
+        body: JSON.stringify({
+          niche,
+          answers,
+          subs,
+          posts: scraped.posts,
+          rawPostCount: scraped.posts.length,
+          embedToken,
+          viewerId: 'viewer',
+        }),
       });
       const data = (await res.json()) as { id?: string; error?: string };
       if (!res.ok || !data.id) {
@@ -126,10 +179,33 @@ export default function NewAnalysis() {
     return (
       <div className="card max-w-2xl space-y-3">
         <div className="text-lg font-medium">Something went wrong</div>
-        <div className="text-sm text-neutral-700">{errorMsg}</div>
+        <pre className="text-sm text-neutral-700 whitespace-pre-wrap break-words">{errorMsg}</pre>
         <button className="btn-secondary" onClick={() => router.push('/')}>
           Start over
         </button>
+      </div>
+    );
+  }
+
+  if (stage === 'scraping') {
+    return (
+      <div className="card max-w-2xl space-y-3">
+        <div className="text-xs uppercase tracking-wide text-neutral-500">{niche}</div>
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-3 w-3 rounded-full bg-accent animate-pulse" />
+          <div className="text-sm">
+            Scraping Reddit from your browser — {scrapeProgress?.current ?? 0} / {scrapeProgress?.total ?? subs.length}
+            {scrapeProgress?.sub ? ` · r/${scrapeProgress.sub}` : ''}
+          </div>
+        </div>
+        <div className="text-xs text-neutral-500">
+          Reddit blocks our server IP. Fetching from your browser instead. ~1.5s per sub.
+        </div>
+        {scrapeErrors.length > 0 && (
+          <div className="text-xs text-amber-700">
+            Some subs failed: {scrapeErrors.map((e) => `r/${e.sub}`).join(', ')}
+          </div>
+        )}
       </div>
     );
   }

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { fetchManySubs } from '@/lib/reddit';
 import { topPosts } from '@/lib/score';
+import type { ScoredPost } from '@/lib/score';
+import type { RedditPost } from '@/lib/types';
 import { rankProblems } from '@/lib/llm';
 import { dbInsert, dbUpdate } from '@/lib/db';
 
@@ -12,40 +13,38 @@ interface AnalysisRow {
   id: string;
   viewer_id: string;
   niche: string;
-  answers: Record<string, string>;
-  subs: string[];
+  answers: Record<string, unknown>;
   status: string;
   problems: unknown[];
   raw_post_count: number;
-}
-
-function timeWindowFromAnswers(answers: Record<string, string>): 'day' | 'week' | 'month' | 'year' | 'all' {
-  const s = JSON.stringify(answers).toLowerCase();
-  if (s.includes('last 30') || s.includes('hot') || s.includes('30 days')) return 'month';
-  if (s.includes('6-12') || s.includes('6 months') || s.includes('year')) return 'year';
-  if (s.includes('all-time') || s.includes('all time')) return 'all';
-  return 'month';
 }
 
 async function runAnalysis(
   id: string,
   niche: string,
   answers: Record<string, string>,
-  subs: string[],
+  scored: ScoredPost[],
+  rawPostCount: number,
   embedToken: string
 ): Promise<void> {
   try {
-    const tw = timeWindowFromAnswers(answers);
-    const rawPosts = await fetchManySubs(subs.slice(0, 7), tw, 100);
-    const scored = topPosts(rawPosts, 50);
-
     if (scored.length === 0) {
-      await dbUpdate('analyses', id, { status: 'done', problems: [], raw_post_count: rawPosts.length }, embedToken);
+      await dbUpdate(
+        'analyses',
+        id,
+        { status: 'done', problems: [], raw_post_count: rawPostCount },
+        embedToken
+      );
       return;
     }
 
     const problems = await rankProblems(niche, answers, scored, embedToken);
-    await dbUpdate('analyses', id, { status: 'done', problems, raw_post_count: rawPosts.length }, embedToken);
+    await dbUpdate(
+      'analyses',
+      id,
+      { status: 'done', problems, raw_post_count: rawPostCount },
+      embedToken
+    );
   } catch (e: unknown) {
     const err = e as Error & { code?: string };
     console.error('[analyze] background work failed', err);
@@ -59,10 +58,12 @@ async function runAnalysis(
 }
 
 export async function POST(req: NextRequest) {
-  const { niche, answers, subs, embedToken, viewerId } = (await req.json()) as {
+  const { niche, answers, subs, posts, rawPostCount, embedToken, viewerId } = (await req.json()) as {
     niche?: string;
     answers?: Record<string, string>;
     subs?: string[];
+    posts?: RedditPost[];
+    rawPostCount?: number;
     embedToken?: string;
     viewerId?: string;
   };
@@ -71,15 +72,20 @@ export async function POST(req: NextRequest) {
   if (!niche || !subs || subs.length === 0) {
     return NextResponse.json({ error: 'niche + subs required' }, { status: 400 });
   }
+  if (!posts) {
+    return NextResponse.json(
+      { error: 'No Reddit posts in payload. Client-side scrape may have failed.' },
+      { status: 400 }
+    );
+  }
+
+  // Score server-side so client never sees PAIN_KEYWORDS (cheaper than
+  // shipping the heuristic to the browser bundle, also keeps tweakable
+  // scoring server-only).
+  const scored = topPosts(posts, 50);
 
   const vid = viewerId ?? 'anon';
   const id = randomUUID();
-
-  // NOTE: subs is intentionally NOT a top-level column in the insert.
-  // The gateway cannot serialize a JS array into the analyses.subs TEXT[]
-  // column. The platform only runs migrations on initial app creation, so we
-  // cannot ALTER the schema in place. Stash subs inside answers._subs (JSONB)
-  // and the read-side flattens it back into a top-level `subs` field.
   const answersWithSubs = { ...(answers ?? {}), _subs: subs };
 
   try {
@@ -92,7 +98,7 @@ export async function POST(req: NextRequest) {
         answers: answersWithSubs,
         status: 'running',
         problems: [],
-        raw_post_count: 0,
+        raw_post_count: posts.length,
       },
       embedToken
     );
@@ -102,10 +108,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `DB insert failed: ${msg}` }, { status: 500 });
   }
 
-  // Detach work — return id immediately so the client can poll /api/analyze/[id].
-  // setImmediate ensures the response is flushed before the long task starts.
   setImmediate(() => {
-    void runAnalysis(id, niche, answers ?? {}, subs, embedToken);
+    void runAnalysis(id, niche, answers ?? {}, scored, rawPostCount ?? posts.length, embedToken);
   });
 
   return NextResponse.json({ id, status: 'running' });

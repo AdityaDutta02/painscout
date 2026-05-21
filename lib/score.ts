@@ -1,7 +1,7 @@
 // Pre-filter Reddit posts before sending the cluster to the LLM.
 // Goal: drop low-signal posts cheaply so the LLM only sees real pain.
 
-import type { RedditPost } from './reddit';
+import type { RedditPost } from './types';
 
 const PAIN_KEYWORDS = [
   'frustrat', 'struggl', 'stuck', 'hate', 'annoying', 'tired of', 'fed up',
