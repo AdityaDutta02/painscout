@@ -6,6 +6,7 @@ import { rankProblems } from '@/lib/llm';
 import { dbInsert, dbUpdate } from '@/lib/db';
 
 export const maxDuration = 300;
+export const dynamic = 'force-dynamic';
 
 interface AnalysisRow {
   id: string;
@@ -26,6 +27,37 @@ function timeWindowFromAnswers(answers: Record<string, string>): 'day' | 'week' 
   return 'month';
 }
 
+async function runAnalysis(
+  id: string,
+  niche: string,
+  answers: Record<string, string>,
+  subs: string[],
+  embedToken: string
+): Promise<void> {
+  try {
+    const tw = timeWindowFromAnswers(answers);
+    const rawPosts = await fetchManySubs(subs.slice(0, 7), tw, 100);
+    const scored = topPosts(rawPosts, 50);
+
+    if (scored.length === 0) {
+      await dbUpdate('analyses', id, { status: 'done', problems: [], raw_post_count: rawPosts.length }, embedToken);
+      return;
+    }
+
+    const problems = await rankProblems(niche, answers, scored, embedToken);
+    await dbUpdate('analyses', id, { status: 'done', problems, raw_post_count: rawPosts.length }, embedToken);
+  } catch (e: unknown) {
+    const err = e as Error & { code?: string };
+    console.error('[analyze] background work failed', err);
+    await dbUpdate(
+      'analyses',
+      id,
+      { status: 'failed', error: err.message ?? 'Unknown error' },
+      embedToken
+    ).catch((updateErr) => console.error('[analyze] failed status update also failed', updateErr));
+  }
+}
+
 export async function POST(req: NextRequest) {
   const { niche, answers, subs, embedToken, viewerId } = (await req.json()) as {
     niche?: string;
@@ -43,10 +75,8 @@ export async function POST(req: NextRequest) {
   const vid = viewerId ?? 'anon';
   const id = randomUUID();
 
-  // Insert record up front so client can poll if needed
-  let row: AnalysisRow;
   try {
-    row = await dbInsert<AnalysisRow>(
+    await dbInsert<AnalysisRow>(
       'analyses',
       {
         id,
@@ -66,44 +96,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `DB insert failed: ${msg}` }, { status: 500 });
   }
 
-  try {
-    const tw = timeWindowFromAnswers(answers ?? {});
-    const rawPosts = await fetchManySubs(subs.slice(0, 7), tw, 100);
-    const scored = topPosts(rawPosts, 50);
+  // Detach work — return id immediately so the client can poll /api/analyze/[id].
+  // setImmediate ensures the response is flushed before the long task starts.
+  setImmediate(() => {
+    void runAnalysis(id, niche, answers ?? {}, subs, embedToken);
+  });
 
-    if (scored.length === 0) {
-      await dbUpdate('analyses', row.id, { status: 'done', problems: [], raw_post_count: rawPosts.length }, embedToken);
-      return NextResponse.json({
-        id: row.id,
-        status: 'done',
-        problems: [],
-        raw_post_count: rawPosts.length,
-        note: 'No pain signal found in selected subs. Try different subs or wider time window.',
-      });
-    }
-
-    const problems = await rankProblems(niche, answers ?? {}, scored, embedToken);
-
-    await dbUpdate(
-      'analyses',
-      row.id,
-      { status: 'done', problems, raw_post_count: rawPosts.length },
-      embedToken
-    );
-
-    return NextResponse.json({
-      id: row.id,
-      status: 'done',
-      problems,
-      raw_post_count: rawPosts.length,
-    });
-  } catch (e: unknown) {
-    const err = e as Error & { code?: string; redirect?: string };
-    await dbUpdate('analyses', row.id, { status: 'failed', error: err.message ?? 'Unknown' }, embedToken).catch(() => {});
-    if (err.code === 'INSUFFICIENT_CREDITS') {
-      return NextResponse.json({ error: err.message, code: 'INSUFFICIENT_CREDITS', redirect: err.redirect }, { status: 402 });
-    }
-    console.error('[analyze] failed', err);
-    return NextResponse.json({ error: err.message ?? 'Analysis failed', id: row.id }, { status: 500 });
-  }
+  return NextResponse.json({ id, status: 'running' });
 }
