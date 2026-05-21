@@ -7,8 +7,22 @@ async function dbRequest(method: string, path: string, body?: unknown, embedToke
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error((err as { error: string }).error ?? `DB error ${res.status}`);
+    const raw = await res.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // body not JSON
+    }
+    const detail =
+      (parsed.detail as string) ??
+      (parsed.message as string) ??
+      (parsed.error as string) ??
+      raw.slice(0, 500) ??
+      'unknown';
+    const code = (parsed.code as string) ?? '';
+    console.error(`[db] gateway ${res.status} ${method} ${path} → ${raw.slice(0, 1000)}`);
+    throw new Error(`gateway ${res.status}${code ? ` [${code}]` : ''}: ${detail}`);
   }
   return res;
 }
