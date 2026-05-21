@@ -1,7 +1,6 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { DiagPanel } from '@/components/DiagPanel';
 
 export default function Home() {
   const router = useRouter();
@@ -55,8 +54,6 @@ export default function Home() {
           <div className="text-neutral-600">Scrape + cluster + rank by viral signal. Export markdown.</div>
         </div>
       </section>
-
-      <DiagPanel />
     </div>
   );
 }
