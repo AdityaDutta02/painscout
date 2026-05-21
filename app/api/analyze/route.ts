@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { fetchManySubs } from '@/lib/reddit';
 import { topPosts } from '@/lib/score';
 import { rankProblems } from '@/lib/llm';
@@ -40,6 +41,7 @@ export async function POST(req: NextRequest) {
   }
 
   const vid = viewerId ?? 'anon';
+  const id = randomUUID();
 
   // Insert record up front so client can poll if needed
   let row: AnalysisRow;
@@ -47,6 +49,7 @@ export async function POST(req: NextRequest) {
     row = await dbInsert<AnalysisRow>(
       'analyses',
       {
+        id,
         viewer_id: vid,
         niche,
         answers: answers ?? {},
@@ -58,8 +61,9 @@ export async function POST(req: NextRequest) {
       embedToken
     );
   } catch (e) {
+    const msg = (e as Error).message ?? String(e);
     console.error('[analyze] insert failed', e);
-    return NextResponse.json({ error: 'DB insert failed' }, { status: 500 });
+    return NextResponse.json({ error: `DB insert failed: ${msg}` }, { status: 500 });
   }
 
   try {

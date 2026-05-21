@@ -1,7 +1,7 @@
 -- PainScout — per-app Postgres schema. Runs once at deploy.
 
 CREATE TABLE IF NOT EXISTS analyses (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id              UUID PRIMARY KEY,
   viewer_id       TEXT NOT NULL,
   niche           TEXT NOT NULL,
   answers         JSONB NOT NULL DEFAULT '{}',

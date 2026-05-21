@@ -26,15 +26,29 @@ export interface AIQuestion {
 }
 
 export async function generateQuestions(niche: string, embedToken: string): Promise<AIQuestion[]> {
-  const system = `You generate 4 multiple-choice questions that refine pain-point research for a content creator working in a given niche.
+  const system = `You generate 4 multiple-choice questions for a CONTENT CREATOR who PUBLISHES content in a given niche. They are the creator/publisher, NOT a consumer or researcher. Every question must reference what THEY create, target, or publish — never what they read, follow, or watch.
 
-Always cover these 4 axes (adapt the wording + options to the niche):
-1. Audience tier (e.g. beginner / mid / senior / leader — adapt language for the niche)
-2. Distribution platform (LinkedIn / Twitter / Instagram-TikTok / YouTube-blog — multi-select OK)
-3. Recency window (last 30 days / 6-12 months / all-time)
-4. Output mode (ranked list / hooks / full briefs / raw posts)
+Always cover these 4 axes, in this order. Adapt wording + options to the niche but keep the creator-side framing strict:
 
-Each question must have 3-4 options. Each option needs a 1-line label and a 1-line description.
+1. AUDIENCE TIER they create for. Who is the viewer of their content? (e.g. juniors learning the niche / mid-level practitioners / senior leaders / decision-makers). Frame as "Who do you create for?", not "Who do you follow?".
+
+2. PUBLISH PLATFORM where they post their content (e.g. Instagram + TikTok reels / LinkedIn carousels / Twitter threads / YouTube long-form / blog + newsletter). Frame as "Where do you POST?", NEVER "Where do you read/consume content?".
+
+3. RECENCY WINDOW for the source pain to scrape (last 30 days = trend-chasing / 6-12 months = evergreen / all-time = foundational). Frame as "How fresh should the pain signal be?".
+
+4. OUTPUT MODE they want from this tool (ranked problem list / hooks only / full content briefs / raw quotes). Frame as "What do you want from this report?".
+
+Each question MUST have 3-4 options. Each option needs a 1-line label and a 1-line description.
+
+ANTI-EXAMPLES — never produce questions like:
+- "Where do you consume content?" (BAD — consumer framing)
+- "What design tools do you use?" (BAD — not on the 4 axes)
+- "What's your favorite UX blog?" (BAD — research framing)
+- "How experienced are you in design?" (BAD — about the creator's skill, not their audience)
+
+GOOD examples:
+- "Where do you publish content?" (audience PLATFORM, creator framing)
+- "Who is your target viewer's career stage?" (audience TIER, creator framing)
 
 Return ONLY valid JSON matching:
 [{"question": "...", "header": "...", "options": [{"label": "...", "description": "..."}]}]
