@@ -75,6 +75,13 @@ export async function POST(req: NextRequest) {
   const vid = viewerId ?? 'anon';
   const id = randomUUID();
 
+  // NOTE: subs is intentionally NOT a top-level column in the insert.
+  // The gateway cannot serialize a JS array into the analyses.subs TEXT[]
+  // column. The platform only runs migrations on initial app creation, so we
+  // cannot ALTER the schema in place. Stash subs inside answers._subs (JSONB)
+  // and the read-side flattens it back into a top-level `subs` field.
+  const answersWithSubs = { ...(answers ?? {}), _subs: subs };
+
   try {
     await dbInsert<AnalysisRow>(
       'analyses',
@@ -82,8 +89,7 @@ export async function POST(req: NextRequest) {
         id,
         viewer_id: vid,
         niche,
-        answers: answers ?? {},
-        subs,
+        answers: answersWithSubs,
         status: 'running',
         problems: [],
         raw_post_count: 0,

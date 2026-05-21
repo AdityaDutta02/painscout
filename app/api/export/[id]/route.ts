@@ -26,7 +26,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (!embedToken) return NextResponse.json({ error: 'Missing embed token' }, { status: 401 });
 
   try {
-    const a = (await dbGet('analyses', params.id, embedToken)) as Analysis;
+    const raw = (await dbGet('analyses', params.id, embedToken)) as Analysis & {
+      answers?: Record<string, string> & { _subs?: string[] };
+    };
+    const subs = raw.answers?._subs ?? raw.subs ?? [];
+    const cleanAnswers = { ...(raw.answers ?? {}) };
+    delete (cleanAnswers as Record<string, unknown>)._subs;
+    const a: Analysis = { ...raw, answers: cleanAnswers, subs };
     const md = renderMarkdown(a);
     return new NextResponse(md, {
       status: 200,
