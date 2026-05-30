@@ -15,7 +15,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <a href="/" className="font-semibold tracking-tight text-lg">
               PainScout<span className="text-accent">.</span>
             </a>
-            <span className="text-xs text-neutral-500">Reddit pain → viral content briefs</span>
+            <nav className="flex items-center gap-4 text-sm">
+              <a href="/" className="text-neutral-600 hover:text-ink">
+                New
+              </a>
+              <a href="/history" className="text-neutral-600 hover:text-ink">
+                History
+              </a>
+            </nav>
           </div>
         </header>
         <main className="max-w-5xl mx-auto px-6 py-10">{children}</main>
