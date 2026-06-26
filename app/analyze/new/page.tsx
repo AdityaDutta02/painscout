@@ -2,9 +2,14 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useEmbedToken } from '@/hooks/use-embed-token';
-import { fetchManySubsBrowser } from '@/lib/reddit-client';
 import { timeWindowFromAnswers } from '@/lib/types';
-import type { SubFetchResult } from '@/lib/reddit-client';
+import type { RedditPost } from '@/lib/types';
+
+interface SubFetchResult {
+  sub: string;
+  posts: RedditPost[];
+  error?: string;
+}
 
 interface AIQuestion {
   question: string;
@@ -113,12 +118,32 @@ export default function NewAnalysis() {
     setScrapeErrors([]);
 
     const timeWindow = timeWindowFromAnswers(answers);
+    setScrapeProgress({ current: 0, total: subs.length, sub: 'gateway' });
 
-    let scraped;
+    let scraped: { posts: RedditPost[]; errors: SubFetchResult[] };
     try {
-      scraped = await fetchManySubsBrowser(subs.slice(0, 7), timeWindow, 100, (current, total, sub) =>
-        setScrapeProgress({ current, total, sub })
-      );
+      const res = await fetch('/api/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-embed-token': embedToken },
+        body: JSON.stringify({ subs: subs.slice(0, 7), timeWindow, limit: 100 }),
+      });
+      const data = (await res.json()) as {
+        posts?: RedditPost[];
+        errors?: SubFetchResult[];
+        error?: string;
+        code?: string;
+      };
+      if (!res.ok || !data.posts) {
+        setErrorMsg(
+          data.code === 'INSUFFICIENT_CREDITS'
+            ? 'Out of credits — top up to continue.'
+            : data.error ?? 'Scrape failed'
+        );
+        setStage('error');
+        return;
+      }
+      scraped = { posts: data.posts, errors: data.errors ?? [] };
+      setScrapeProgress({ current: subs.length, total: subs.length, sub: '' });
     } catch (e) {
       setErrorMsg(`Reddit scrape failed: ${(e as Error).message}`);
       setStage('error');
@@ -194,12 +219,11 @@ export default function NewAnalysis() {
         <div className="flex items-center gap-3">
           <span className="inline-block h-3 w-3 rounded-full bg-accent animate-pulse" />
           <div className="text-sm">
-            Scraping Reddit from your browser — {scrapeProgress?.current ?? 0} / {scrapeProgress?.total ?? subs.length}
-            {scrapeProgress?.sub ? ` · r/${scrapeProgress.sub}` : ''}
+            Scraping Reddit via gateway — {scrapeProgress?.current ?? 0} / {scrapeProgress?.total ?? subs.length}
           </div>
         </div>
         <div className="text-xs text-neutral-500">
-          Reddit blocks our server IP. Fetching from your browser instead. ~1.5s per sub.
+          Server-side scrape via Terminal AI. ~3 credits per sub.
         </div>
         {scrapeErrors.length > 0 && (
           <div className="text-xs text-amber-700">

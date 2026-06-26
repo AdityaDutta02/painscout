@@ -1,53 +1,93 @@
-// SERVER-SIDE Reddit fetch — kept as a fallback. Reddit blocks the
-// Coolify datacenter IP, so the primary path is client-side fetch via
-// lib/reddit-client.ts. This file is only used if the client did not
-// supply pre-scraped posts in the analyze payload.
+// Server-side Reddit fetch via Terminal AI gateway scrape SDK.
+// Gateway handles backend rotation, residential IPs, and rate limits.
+// Flat 3 credits/call (1 on cache hit) billed to app owner.
 
 import type { RedditPost, TimeWindow } from './types';
+import { reddit as redditScrape } from './scrape-sdk';
 
 export type { RedditPost };
 
-const UA = 'web:painscout:0.1 (research)';
-
-export async function fetchSub(sub: string, timeWindow: TimeWindow = 'month', limit = 100): Promise<RedditPost[]> {
-  const url = `https://www.reddit.com/r/${encodeURIComponent(sub)}/top.json?t=${timeWindow}&limit=${limit}`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA },
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    if (res.status === 429) throw new Error(`Rate limited on r/${sub}. Try again in a moment.`);
-    if (res.status === 404 || res.status === 403) return [];
-    throw new Error(`Reddit fetch failed for r/${sub}: ${res.status}`);
-  }
-  const data = (await res.json()) as { data?: { children?: Array<{ data: Record<string, unknown> }> } };
-  const children = data.data?.children ?? [];
-  return children.map((c) => {
-    const d = c.data;
-    return {
-      sub,
-      title: (d.title as string) ?? '',
-      selftext: (d.selftext as string) ?? '',
-      score: (d.score as number) ?? 0,
-      comments: (d.num_comments as number) ?? 0,
-      url: 'https://reddit.com' + ((d.permalink as string) ?? ''),
-      flair: (d.link_flair_text as string) ?? '',
-      created: (d.created_utc as number) ?? 0,
-    } satisfies RedditPost;
-  });
+export interface SubFetchResult {
+  sub: string;
+  posts: RedditPost[];
+  error?: string;
 }
 
-export async function fetchManySubs(subs: string[], timeWindow: TimeWindow = 'month', limit = 100): Promise<RedditPost[]> {
-  const out: RedditPost[] = [];
-  for (const sub of subs) {
-    try {
-      const posts = await fetchSub(sub, timeWindow, limit);
-      out.push(...posts);
-    } catch (err) {
-      console.warn(`[reddit] skipped r/${sub}:`, err);
-    }
-    // polite delay between subs
-    await new Promise((r) => setTimeout(r, 1500));
+interface RedditChild {
+  data: Record<string, unknown>;
+}
+
+interface RedditListingData {
+  // Raw Reddit shape: { children: [{ data: {...} }] }
+  children?: RedditChild[];
+  // Possible normalized shape: { items: [...] }
+  items?: Array<Record<string, unknown>>;
+  // Or wrapped: { data: { children: [...] } }
+  data?: { children?: RedditChild[] };
+}
+
+function pickField<T>(d: Record<string, unknown>, ...keys: string[]): T | undefined {
+  for (const k of keys) {
+    if (d[k] !== undefined && d[k] !== null) return d[k] as T;
   }
-  return out;
+  return undefined;
+}
+
+function normalizeChild(sub: string, d: Record<string, unknown>): RedditPost {
+  const permalink = pickField<string>(d, 'permalink', 'url') ?? '';
+  const fullUrl = permalink.startsWith('http')
+    ? permalink
+    : `https://reddit.com${permalink}`;
+  return {
+    sub,
+    title: pickField<string>(d, 'title') ?? '',
+    selftext: pickField<string>(d, 'selftext', 'text', 'body') ?? '',
+    score: pickField<number>(d, 'score', 'ups', 'likes') ?? 0,
+    comments: pickField<number>(d, 'num_comments', 'comments') ?? 0,
+    url: fullUrl,
+    flair: pickField<string>(d, 'link_flair_text', 'flair') ?? '',
+    created: pickField<number>(d, 'created_utc', 'created') ?? 0,
+  };
+}
+
+export async function fetchSub(
+  sub: string,
+  timeWindow: TimeWindow = 'month',
+  limit = 100,
+  embedToken = ''
+): Promise<RedditPost[]> {
+  const { data } = await redditScrape.listing<RedditListingData>(
+    sub,
+    { sort: 'top', t: timeWindow, limit },
+    embedToken
+  );
+  const children = data.children ?? data.data?.children ?? [];
+  if (children.length > 0) {
+    return children.map((c) => normalizeChild(sub, c.data));
+  }
+  const items = data.items ?? [];
+  return items.map((d) => normalizeChild(sub, d));
+}
+
+export async function fetchManySubs(
+  subs: string[],
+  timeWindow: TimeWindow,
+  limit: number,
+  embedToken: string,
+  onProgress?: (current: number, total: number, sub: string) => void
+): Promise<{ posts: RedditPost[]; errors: SubFetchResult[] }> {
+  const posts: RedditPost[] = [];
+  const errors: SubFetchResult[] = [];
+  for (let i = 0; i < subs.length; i++) {
+    const sub = subs[i];
+    onProgress?.(i + 1, subs.length, sub);
+    try {
+      const subPosts = await fetchSub(sub, timeWindow, limit, embedToken);
+      posts.push(...subPosts);
+    } catch (e) {
+      errors.push({ sub, posts: [], error: (e as Error).message });
+      console.warn(`[reddit] skipped r/${sub}:`, e);
+    }
+  }
+  return { posts, errors };
 }
