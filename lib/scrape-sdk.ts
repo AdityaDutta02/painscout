@@ -50,7 +50,7 @@ async function startJob(
   body: Record<string, unknown>,
   token: string
 ): Promise<StartResponse> {
-  const res = await fetch(`${gatewayUrl()}/scrape/${platform}`, {
+  const res = await fetch(`${gatewayUrl()}/v1/scrape/${platform}`, {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify(body),
@@ -80,7 +80,7 @@ async function startJob(
 }
 
 async function pollJob(jobId: string, token: string): Promise<PollResponse> {
-  const res = await fetch(`${gatewayUrl()}/scrape/result/${jobId}`, {
+  const res = await fetch(`${gatewayUrl()}/v1/scrape/result/${jobId}`, {
     headers: authHeaders(token),
   });
   if (!res.ok)
